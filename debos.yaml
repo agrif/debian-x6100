@@ -1,0 +1,144 @@
+{{- $codename := or .codename "bookworm" -}}
+{{- $mirror := or .mirror "https://deb.debian.org/debian" -}}
+{{- $hostname := or .hostname "x6100" -}}
+{{- $image := or .image (printf "debian-%s-x6100.img" $codename) -}}
+{{- $username := or .username "radio" -}}
+{{- $password := or .password "radio" -}}
+
+architecture: armhf
+
+actions:
+  - action: debootstrap
+    description: bootstrap debian {{ $codename }}
+    suite: {{ $codename }}
+    components:
+      - main
+      - contrib
+      - non-free
+      - non-free-firmware
+    mirror: {{ $mirror }}
+
+  - action: run
+    description: enable {{ $codename }} security repo
+    chroot: true
+    command: |
+      echo "" >> /etc/apt/sources.list
+      echo "# {{ $codename }} security repo" >> /etc/apt/sources.list
+      echo "deb http://security.debian.org/debian-security {{ $codename }}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+
+  - action: run
+    description: enable {{ $codename }} updates repo
+    chroot: true
+    command: |
+      echo "" >> /etc/apt/sources.list
+      echo "# {{ $codename }} updates repo" >> /etc/apt/sources.list
+      echo "deb http://deb.debian.org/debian {{ $codename }}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+
+  - action: apt
+    description: update apt sources
+    update: true
+
+  - action: run
+    description: install standard packages
+    chroot: true
+    script: scripts/install-standard.sh
+
+  - action: apt
+    description: install kernel
+    recommends: true
+    packages:
+      - linux-image-armmp-lpae
+
+  - action: apt
+    description: install extra packages
+    recommends: true
+    packages:
+      # maybe add user to netdev? unclear
+      # firmware-realtek, bash-completion, avahi-daemon
+      - man-db
+      - manpages
+      - openssh-server
+      - sudo
+
+  - action: run
+    description: set hostname
+    chroot: true
+    command: |
+      echo "{{ $hostname }}" > /etc/hostname
+      echo "127.0.0.1	localhost" > /etc/hosts
+      echo "127.0.1.1	{{ $hostname }}" >> /etc/hosts
+      echo "" >> /etc/hosts
+      echo "# The following lines are desirable for IPv6 capable hosts" >> /etc/hosts
+      echo "::1     localhost ip6-localhost ip6-loopback" >> /etc/hosts
+      echo "ff02::1 ip6-allnodes" >> /etc/hosts
+      echo "ff02::2 ip6-allrouters" >> /etc/hosts
+
+  - action: run
+    description: set up user
+    chroot: true
+    script: scripts/setup-user.sh {{ $username }} {{ $password }}
+
+  - action: run
+    description: clean rootfs
+    chroot: true
+    script: scripts/rootfs-cleanup.sh
+
+  # FIXME this should be a package or packages
+  - action: overlay
+    description: add extra files to /boot
+    source: boot/
+    destination: /boot/
+  - action: overlay
+    description: copy custom systemd units
+    source: systemd-units/
+    destination: /usr/lib/systemd/system/
+  - action: run
+    description: enable custom systemd units
+    chroot: true
+    command: |
+      mkdir -p /etc/systemd/system/multi-user.target.wants
+      ln -s /usr/lib/systemd/system/regen-openssh-keys.service /etc/systemd/system/multi-user.target.wants/regen-openssh-keys.service
+
+  - action: image-partition
+    description: partition image
+    imagename: {{ $image }}
+    imagesize: 2GB
+    partitiontype: msdos # FIXME will it boot from sector 256? use gpt if so.
+    mountpoints:
+      - mountpoint: /boot
+        partition: X6100 Boot
+      - mountpoint: /
+        partition: Debian Root
+    partitions:
+      - name: U-Boot
+        fs: none
+        start: 16s
+        end: 2047s # 1MiB
+      - name: X6100 Boot
+        fs: vfat
+        start: 2048s
+        end: 524287s # +256MiB
+        #parttype: ????UUID
+        parttype: "0C"
+        flags: [ boot ]
+        #flags: [ legacy_boot ]
+      - name: Debian Root
+        fs: ext4
+        start: 524288s
+        end: 100%
+        #parttype: 69dad710-2ce4-4e3c-b16c-21a1d49abed3 # arm 32 root type
+        parttype: "83"
+
+  - action: filesystem-deploy
+    description: deploy filesystem image
+
+  - action: raw
+    description: write u-boot
+    origin: recipe
+    source: boot/u-boot-sunxi-with-spl.bin
+    partition: U-Boot
+
+  # - action: run
+  #   description: pack result image
+  #   postprocess: true
+  #   command: xz -z -v -f -T 0 {{ $image }}

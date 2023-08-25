@@ -1,0 +1,5 @@
+/debian-*-x6100.img
+/debian-*-x6100.img.*
+/boot/boot.scr
+/boot/sun8i-r16-x6100.dtb
+/boot/u-boot-sunxi-with-spl.bin
